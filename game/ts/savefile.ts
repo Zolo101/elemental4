@@ -1,7 +1,6 @@
 import { ElementalBaseAPI, SaveFileAPI, getSubAPI, ServerSavefileEntry } from '../../shared/elem';
-import { debounce } from '@reverse/debounce';
+import { debounce, throttle } from '@reverse/debounce';
 import { Store } from '../../shared/store';
-import localForage from '../../shared/localForage';
 import { escapeHTML } from '../../shared/shared';
 import { connectApi, builtInApis } from './api';
 import { allBuiltInServers, builtInOfficialServers, builtInThirdPartyServers, builtInInternalServers, builtInDevInternalServers, serverOrder } from './server-manager';
@@ -124,7 +123,7 @@ export async function uninstallServer(baseUrl: string) {
   }).filter(Boolean))
 
   const opts = { name: 'ELEMENTAL', storeName: server.config.type + ':' + processBaseUrl(baseUrl) };
-  await localForage.createInstance({...opts}).dropInstance({...opts});
+  // TODO: Delete Data with Service Worker Method
 }
 
 export async function resetAllThemes() {
@@ -292,13 +291,19 @@ export async function setActiveSaveFile(api: ElementalBaseAPI, id: string): Prom
 export async function getAPISaveFile(baseUrl: string): Promise<SaveFileAPI> {
   const x = (await data.get('config:' + processBaseUrl(baseUrl)) || {}) as object;
 
+  let closed = false;
   const write = debounce(() => {
+    if (closed) return;
     data.set('config:' + processBaseUrl(baseUrl), x);
   }, 1000);
 
   return {
     get: (k, def) => { return k in x ? x[k] : def },
-    set: (k, v) => { x[k] = v; write(); }
+    set: (k, v) => { x[k] = v; write(); },
+    close: () => {
+      closed = true;
+      data.set('config:' + processBaseUrl(baseUrl), x);
+    }
   }
 }
 

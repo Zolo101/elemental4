@@ -1,34 +1,35 @@
-import { Elem, ElementalBaseAPI, ElementalLoadingUi, ServerStats, SuggestionAPI, SuggestionResponse, SuggestionRequest, Suggestion, ServerSavefileAPI, ServerSavefileEntry, SuggestionColorInformation, ElementalColorPalette, ThemedPaletteEntry, applyColorTransform, RecentCombinationsAPI, RecentCombination} from "../../elem";
-import firebase from "firebase/app";
-import "firebase/analytics";
-import "firebase/firestore";
+import { Elem, ElementalBaseAPI, ElementalLoadingUi, ServerStats, SuggestionAPI, SuggestionResponse, SuggestionRequest, Suggestion, ServerSavefileAPI, ServerSavefileEntry, SuggestionColorInformation, ElementalColorPalette, ThemedPaletteEntry, applyColorTransform, RecentCombinationsAPI, RecentCombination, OptionsMenuAPI, OptionsSection, OptionTypes } from "../../elem";
 import Color from 'color';
 import {login} from "./login";
 import {foundElement, getFound} from "./savefile";
-import {getElem, getCombination} from "./elements";
+import {getElem, getCombination, downloadElems} from "./elements";
 import {getSuggests, downSuggestion, newSuggestion} from "./suggestions";
 import {getRecents, waitForNew} from "./recents";
 import { IStore } from "../../store";
+import { Cache } from "./cache";
+import {Element} from "./types";
 
-export class NV7ElementalAPI extends ElementalBaseAPI implements SuggestionAPI<'dynamic-elemental4'>, RecentCombinationsAPI,  ServerSavefileAPI {
+export class NV7ElementalAPI extends ElementalBaseAPI implements SuggestionAPI<'dynamic-elemental4'>, RecentCombinationsAPI,  ServerSavefileAPI, OptionsMenuAPI {
 	public uid: string
 	public saveFile;
 	public ui;
 	public votesRequired: number = 3;
 	public ref;
 	public store: IStore;
+	public prefix: string;
+	public cache: Cache;
+	public elemCache: Record<string, Element> = {};
 
   async open(ui?: ElementalLoadingUi): Promise<boolean> {
-		if (firebase.apps.length != 1) {
-			// Initialize Firebase
-			firebase.initializeApp(this.config.firebaseConfig);
-			firebase.analytics();
-		}
-
-		return await login(this, ui);
+		this.prefix = this.config.prefix;
+		this.cache = new Cache();
+		await this.cache.init();
+		await login(this, ui);
+		await downloadElems(this, ui);
+		return true;
   }
   async close(): Promise<void> {
-		this.ref.off("value");
+		this.ref.close();
 		return;
 	}
   async getStats(): Promise<ServerStats> {
@@ -69,7 +70,7 @@ export class NV7ElementalAPI extends ElementalBaseAPI implements SuggestionAPI<'
   }
 	async getSuggestions(ids: string[]): Promise<Suggestion<"dynamic-elemental4">[]> {
 		ids.sort();
-		return getSuggests(ids[0], ids[1]);
+		return getSuggests(this, ids[0], ids[1]);
 	}
 	async createSuggestion(ids: string[], suggestion: SuggestionRequest<"dynamic-elemental4">): Promise<SuggestionResponse> {
 		ids.sort();
@@ -78,11 +79,11 @@ export class NV7ElementalAPI extends ElementalBaseAPI implements SuggestionAPI<'
 
 	async downvoteSuggestion(ids: string[], suggestion: SuggestionRequest<"dynamic-elemental4">): Promise<void> {
 		ids.sort();
-		return downSuggestion(ids[0], ids[1], suggestion, this);
+		return downSuggestion(suggestion, this);
 	}
 
 	async getRecentCombinations(limit: number): Promise<RecentCombination[]> {
-		return getRecents(limit);
+		return getRecents(this);
 	}
 
 	async waitForNewRecent(): Promise<void> {
@@ -94,5 +95,25 @@ export class NV7ElementalAPI extends ElementalBaseAPI implements SuggestionAPI<'
 		const [saturation, lightness] = x.map(y => parseFloat(y));
 
     return applyColorTransform(basePalette[base], saturation, lightness);
-  }
+	}
+	
+	getOptionsMenu(): OptionsSection[] {
+		return [
+			{
+				title: "Nv7's Elemental",
+				desc: this.config.description,
+				items: [
+					{
+						type: "button",
+						label: "Log Out",
+						onChange: async () => {
+							await this.saveFile.set("email", "default");
+							await this.saveFile.set("password", "default");
+							await this.ui.reloadSelf();
+						}
+					}
+				]
+			},
+		];
+	}
 }

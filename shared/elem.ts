@@ -189,6 +189,7 @@ export interface ElementalPopupBackend {
 export interface SaveFileAPI {
   get<T>(k: string, def?: T): T;
   set(k: string, v: any): void;
+  close: () => void;
 }
 
 interface ElementalBaseAPIParams<Config extends ElementalConfig = ElementalConfig> {
@@ -259,6 +260,10 @@ export interface ElementalRuntimeUI {
   popup: (frameUrl?: string) => Promise<ElementalPopupBackend | null>
   /** Creates a highly customizable dialog with markdown, inputs, and buttons. Client will provide a user interface. */
   dialog(opt: CustomDialogOptions): Promise<Record<string, string>>
+  /** Shows a loading UI while an action takes place. */
+  loading<X>(job: (ui: ElementalLoadingUi) => Promise<X>): Promise<X>
+  /** Reloads UI */
+  reloadSelf: () => Promise<void>;
 }
 
 /** Base API */
@@ -291,22 +296,22 @@ export abstract class ElementalBaseAPI<Config extends ElementalConfig = Elementa
   }
   
   /** Called to setup everything. */
-  abstract async open(ui?: ElementalLoadingUi): Promise<boolean>;
+  abstract open(ui?: ElementalLoadingUi): Promise<boolean>;
 
   /** Called to stop everything. Most cases you probably wont have anything to stop. */
-  abstract async close(): Promise<void>;
+  abstract close(): Promise<void>;
 
   /** Get list of elements you start with. */
-  abstract async getStartingInventory(): Promise<string[]>;
+  abstract getStartingInventory(): Promise<string[]>;
 
   /** Get various stats. */
-  abstract async getStats(): Promise<ServerStats>;
+  abstract getStats(): Promise<ServerStats>;
 
   /** Fetch element data. */
-  abstract async getElement(id: string): Promise<Elem>;
+  abstract getElement(id: string): Promise<Elem>;
 
   /** Fetch combination data. */
-  abstract async getCombo(ids: string[]): Promise<string[]>;
+  abstract getCombo(ids: string[]): Promise<string[]>;
 }
 
 export interface SuggestionColorInformation<Type extends SuggestionColorType> {
@@ -361,6 +366,7 @@ export interface OptionTypes {
   checkboxGroup: string[];
   button: undefined;
   label: undefined;
+  listItem: string;
 }
 export interface OptionChoice {
   label: string;
@@ -371,6 +377,9 @@ export interface OptionsItem<Type extends keyof OptionTypes = keyof OptionTypes>
   type: Type;
 
   label: string;
+  
+  /** Title is in strong in a listItem */
+  title?: string;
 
   /** If your api needs to restart when changing this option, set to true. Restart happens after
    * closing the options menu or pressing Apply. Not immediately.

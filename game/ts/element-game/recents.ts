@@ -15,9 +15,15 @@ export async function getRecentCombinationDOM(rc: ElementalBaseAPI, x: RecentCom
   eq2.innerHTML = '=';
 
   const [elem1, elem2, elem3] = await Promise.all([
-    rc.getElement(x.recipe[0]).then(x => ElementDom(x)),
-    rc.getElement(x.recipe[1]).then(x => ElementDom(x)),
-    rc.getElement(x.result).then(x => ElementDom(x)),
+    rc.getElement(x.recipe[0]).then(x => {
+      return ElementDom(x);
+    }),
+    rc.getElement(x.recipe[1]).then(x => {
+      return ElementDom(x);
+    }),
+    rc.getElement(x.result).then(x => {
+      return ElementDom(x);
+    }),
   ]);
 
   root.appendChild(elem1);
@@ -43,8 +49,9 @@ export async function InitElementNews() {
       playSound('news.new-element');
       const combo = await rc.getRecentCombinations(1);
       const elem = await getRecentCombinationDOM(rc, combo[0]);
-      elem.classList.add('animate-in')
+      elem.classList.add('animate-in');
       container.prepend(elem);
+      container.lastElementChild.remove();
     }
     rc.waitForNewRecent().then(onNewRecent);
   }

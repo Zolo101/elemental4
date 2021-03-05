@@ -1,7 +1,7 @@
 import { CustomPaletteAPI, Elem, ElementalBaseAPI, ElementalColorPalette, ElementalLoadingUi, ServerStats, Suggestion, SuggestionAPI, SuggestionRequest, SuggestionResponse, applyColorTransform, ThemedPaletteEntry, OptionsSection, OptionsItem, RecentCombinationsAPI, RecentCombination, OptionsMenuAPI, SuggestionColorInformation } from "../elem";
 import { E4SuggestionResponse, Entry } from '../elemental4-types';
 import { fetchWithProgress } from '../fetch-progress';
-import { randomString, sortCombo } from '../shared';
+import { delay, randomString, sortCombo } from '../shared';
 import Color from 'color';
 import { SimpleEmitter } from '@reverse/emitter';
 import io from 'socket.io-client';
@@ -28,7 +28,7 @@ export class Elemental4API
              OptionsMenuAPI,
              RecentCombinationsAPI  {
   static type = 'elemental4';
-  private static DB_VERSION = 6;
+  private static DB_VERSION = 8;
 
   private dbMeta: DBMeta;
 
@@ -37,10 +37,12 @@ export class Elemental4API
 
   private socket: SocketIOClient.Socket;
 
+  private profiles: Record<string, string>;
+
   private async calculateFundamentals(eLeftI: string | Elem, eRightI: string | Elem, eResultI: string | Elem) {
-    const eLeft = typeof eLeftI === 'string' ? await this.getElement(eLeftI) : eLeftI;
-    const eRight = typeof eRightI === 'string' ? await this.getElement(eRightI) : eRightI;
-    const eResult = typeof eResultI === 'string' ? await this.getElement(eResultI) : eResultI;
+    const eLeft = typeof eLeftI === 'string' ? await this.getRawElement(eLeftI) : eLeftI;
+    const eRight = typeof eRightI === 'string' ? await this.getRawElement(eRightI) : eRightI;
+    const eResult = typeof eResultI === 'string' ? await this.getRawElement(eResultI) : eResultI;
     
     const complexity = Math.max(eLeft.stats.treeComplexity, eRight.stats.treeComplexity) + 1;
     if ((complexity < eResult.stats.treeComplexity || (eResult.stats.treeComplexity === 0 && eResult.stats.usageCount === 0))) {
@@ -62,12 +64,17 @@ export class Elemental4API
       }
     }
   }
-  private processEntry = createQueueExec(async(entry: Entry) => {
+
+  loading?: Promise<void>;
+  
+  private processEntry = createQueueExec(async(entry: Entry) => {    
+    if(entry === null) return
     if (entry.entry <= this.dbMeta.lastEntry) {
+      console.log('[E4API] Skipping Entry ' + entry.entry + '; ' + entry.type)
       return;
     }
     if (entry.entry !== this.dbMeta.lastEntry + 1) {
-      console.log('entry out of order. expected #' + (this.dbMeta.lastEntry + 1) + ' but got #' + entry.entry + '. calling later');
+      console.log('[E4API] Entry out of order. expected #' + (this.dbMeta.lastEntry + 1) + ' but got #' + entry.entry + '. calling later');
       this.processEntry.callLater(entry);
       return;
     }
@@ -98,8 +105,9 @@ export class Elemental4API
         }
       } as Elem);
       // TODO get public client id
-      // if (this.saveFile.get('clientPublic') === entry.creators[0]) {
-      if (false) {
+      if (entry.creators.includes(this.saveFile.get('clientPublic'))) {
+        console.log('Request Comment', entry);
+      // if (false) {
         // const mark = await this.ui.prompt({
         //   title: 'Suggestion Created!',
         //   text: `An Element you previously suggested was voted into the game. Since you were the first suggester, you get to add one of the two Creator Marks on this Element.\n\nPlease write your mark for "${entry.text}"`,
@@ -130,28 +138,27 @@ export class Elemental4API
         result: entry.result
       })
       await this.store.set(entry.recipe, entry.result);
-      await this.saveFile.set('meta', this.dbMeta);
       this.waitNewComboEmitter.emit();
       
-      const eResult = await this.getElement(entry.result);
+      const eResult = await this.getRawElement(entry.result);
       eResult.stats.recipeCount++;
       eResult.stats.recipeList.push(recipe);
 
-      const eLeft = await this.getElement(recipe[0]);
+      const eLeft = await this.getRawElement(recipe[0]);
       
       eLeft.stats.usageCount++;
       eLeft.stats.usageList.push({ recipe, result: [entry.result] });
 
       let eRight = eLeft;
       if (recipe[0] !== recipe[1]) {
-        eRight = await this.getElement(recipe[1]);
+        eRight = await this.getRawElement(recipe[1]);
         eRight.stats.usageCount++;
         eRight.stats.usageList.push({ recipe, result: [entry.result] });
-        this.store.set(eRight.id, eRight);
+        await this.store.set(eRight.id, eRight);
       }
 
-      this.store.set(eLeft.id, eLeft);
-      this.store.set(eResult.id, eResult);
+      await this.store.set(eLeft.id, eLeft);
+      await this.store.set(eResult.id, eResult);
 
       await this.calculateFundamentals(eLeft, eRight, eResult);
     } else if(entry.type === 'comment') {
@@ -160,7 +167,9 @@ export class Elemental4API
       await this.store.set(entry.id, x);
     }
     this.dbMeta.lastEntry = entry.entry;
-    this.waitNewEntryEmitter.emit(entry)
+    await this.store.set('last-entry', this.dbMeta.lastEntry);
+    await this.saveFile.set('meta', this.dbMeta);
+    this.waitNewEntryEmitter.emit(entry);
   });
   private async notifyUsername() {
     const id = this.saveFile.get('clientSecret');
@@ -178,18 +187,53 @@ export class Elemental4API
     }
   }
 
-  async open(ui?: ElementalLoadingUi): Promise<boolean> {
+  // debug!!!
+  private async debugUnlockAll() {
+    this.store.bulkTransfer(async() => {
+      const keys = await this.store.keys();
+      const elements = keys.filter(key => !key.includes('+'));
+      console.log(keys)
+      console.log(elements)
+      elements.forEach(async(key) => {
+        window['$ts'].add.addElementToGame(await this.getRawElement(key));
+      })
+    })
+  }
+
+  async open(ui?: ElementalLoadingUi, errorRecovery: boolean = false): Promise<boolean> {  
+    (window as any).repair = this.ui.loading.bind(this.ui, this.resetDatabase.bind(this));
+
     if (this.saveFile.get('clientSecret', '[unset]') === '[unset]') {
       this.saveFile.set('clientSecret', randomString(32));
       this.saveFile.set('clientName', '[Ask on Element Suggestion]');
     }
 
+    try {
+      ui.status("Updating Profiles", 0.25);
+      var resp = await fetch(this.baseUrl + "/api/v1/profiles")
+      ui.status("Updating Profiles", 0.5);
+      this.profiles = await resp.json();
+      ui.status("Updating Profiles", 0.75);
+      await this.store.set("profiles", this.profiles);
+      ui.status("Updating Profiles", 1);
+    } catch (e) {
+      ui.status("Updating Profiles", 0);
+      this.profiles = await this.store.get("profiles");
+      ui.status("Updating Profiles", 1);
+    }
+
     let dbFetch: string;
     try {
       this.dbMeta = await this.saveFile.get('meta');
-      if(this.dbMeta.version !== Elemental4API.DB_VERSION || this.dbMeta.dbId !== this.config.dbId) {
+      if (this.dbMeta.lastUpdated < 1607103532524) {
         dbFetch = 'full';
-      } else if (formatDate(new Date()) === formatDate(new Date(this.dbMeta.lastUpdated))) {
+        this.store.clear();
+      } else if (this.dbMeta.lastEntry !== await this.store.get('last-entry')) {
+        console.warn("Database Corruption Detected");
+        dbFetch = 'full';
+      } else if(errorRecovery || this.dbMeta.version !== Elemental4API.DB_VERSION || this.dbMeta.dbId !== this.config.dbId) {
+        dbFetch = 'full';
+      } else if (formatDate(new Date(Date.now())) === formatDate(new Date(this.dbMeta.lastUpdated))) {
         dbFetch = 'today';
       } else if (Date.now() - this.dbMeta.lastUpdated > (30*ONE_DAY)) {
         dbFetch = 'full';
@@ -200,11 +244,16 @@ export class Elemental4API
       dbFetch = 'full';
     }
 
+    this.running = true;
+
+    let unlockDynamicEntries;
+    let loading = new Promise((resolve) => unlockDynamicEntries = resolve)
+
     try {
       ui?.status('Updating Database');
 
       if(dbFetch === 'full') {
-        this.store.clear();
+        await this.store.clear();
         this.dbMeta = {
           lastEntry: 0,
           lastUpdated: Date.now(),
@@ -215,109 +264,181 @@ export class Elemental4API
       }
 
       if (dbFetch !== 'none') {
+        console.log(`[E4API] Fetch "${dbFetch}", have #${this.dbMeta.lastEntry} at ${this.dbMeta.lastUpdated}.`)
         await this.store.bulkTransfer(() => new Promise(async(done, err) => {
-          const endpoint = dbFetch === 'full'
-            ? '/api/v1/db/all'
-            : dbFetch === 'today'
-              ? '/api/v1/db/after-entry/' + this.dbMeta.lastEntry
-              : '/api/v1/db/from-date/' + dbFetch
-          const f = await fetch(this.baseUrl + endpoint)
-          const progress = fetchWithProgress(f, true);
-          
-          let downloadProgress = 0;
-          let processProgress = 0;
-          let totalEntryCount = parseInt(f.headers.get('Elem4-Entry-Length'));
-  
-          progress.on('progress', ({ percent, current, total }) => {
-            downloadProgress = percent;
-            ui?.status('Updating Database', (downloadProgress + processProgress) / 2);
-          });
-          progress.on('done', async(text) => {
-            downloadProgress = 1;
-            if(text.length === 0) {
-              ui?.status('Updating Database', 1);
-              done();
-            } else {
-              ui?.status('Updating Database', (downloadProgress + processProgress) / 2);
-            }
-          });
-  
-          let finishedProcessing = 0;
-          const processEntry = createQueueExec(async(x: Entry) => {
-            await this.processEntry(x);
-            finishedProcessing++;
-            processProgress = finishedProcessing / totalEntryCount;
-            ui?.status('Updating Database', (downloadProgress + processProgress) / 2);
-            if (finishedProcessing === totalEntryCount) {
-              done();
-            }
-          });
-  
-          let data = '';
-          let stop = false;
-          const queue = createQueueExec((entry: any) => {
-            if(stop)return;
-            return processEntry(entry)
-          })
-          progress.on('data', (chunk) => {
-            if(stop)return;
-            const split = (data + chunk).split('\n');
-            data = split.pop();
-            split.forEach((x) => {
-              let json;
-              try {
-                json = JSON.parse(x);
-              } catch (error) {
-                err(error);
+          try {
+            const endpoint = dbFetch === 'full'
+              ? '/api/v1/db/all'
+              : dbFetch === 'today'
+                ? '/api/v1/db/after-entry/' + (this.dbMeta.lastEntry - 1)
+                : '/api/v1/db/from-date/' + dbFetch
+            const f = await fetch(this.baseUrl + endpoint)
+            const progress = fetchWithProgress(f, true);
+       
+            this.socket = io(this.baseUrl);
+            this.socket.on('new-entry', async(entry) => {
+              if (loading) {
+                await loading;
               }
-              queue(json).catch((e) => {
-                stop = true;
-                err(e)
+              this.processEntry(entry);
+            });
+
+            let downloadProgress = 0;
+            let processProgress = 0;
+            let totalEntryCount = parseInt(f.headers.get('Elem4-Entry-Length'));
+    
+            progress.on('progress', ({ percent, current, total }) => {
+              downloadProgress = percent;
+              ui?.status('Updating Database', (downloadProgress + processProgress) / 2);
+            });
+            progress.on('done', async(text) => {
+              downloadProgress = 1;
+              if(text.length === 0) {
+                ui?.status('Updating Database', 1);
+                done();
+              } else {
+                ui?.status('Updating Database', (downloadProgress + processProgress) / 2);
+              }
+            });
+    
+            let finishedProcessing = 0;
+            const processEntry = createQueueExec(async(x: Entry) => {
+              await this.processEntry(x);
+              finishedProcessing++;
+              processProgress = finishedProcessing / totalEntryCount;
+              ui?.status('Updating Database', (downloadProgress + processProgress) / 2);
+              if (finishedProcessing === totalEntryCount) {
+                done();
+              }
+            });
+    
+            let data = '';
+            let stop = false;
+            const queue = createQueueExec((entry: any) => {
+              if(stop)return;
+              return processEntry(entry)
+            })
+            progress.on('data', (chunk) => {
+              if(stop)return;
+              const split = (data + chunk).split('\n');
+              data = split.pop();
+              split.forEach((x) => {
+                let json;
+                try {
+                  json = JSON.parse(x);
+                } catch (error) {
+                  err(error);
+                }
+                queue(json).catch((e) => {
+                  stop = true;
+                  err(e)
+                });
               });
             });
-          });
-        })).catch((e) => {
-          console.error(e)
-        })
+          } catch (error) {
+            err(error)
+          }
+        })).catch(() => {})
         this.dbMeta.lastUpdated = Date.now();
+      } else {
+        this.socket = io(this.baseUrl);
+        this.socket.on('new-entry', async (entry) => {
+          if (loading) {
+            await loading;
+          }
+          this.processEntry(entry);
+        });
       }
 
       await this.saveFile.set('meta', this.dbMeta);
 
-      this.notifyUsername();
+      await this.notifyUsername();
 
-      this.socket = io(this.baseUrl);
-      this.socket.on('new-entry', (entry) => {
-        this.processEntry(entry);
-      })
+      this.socket.on('disconnect', () => {
+        console.log('[E4API] Disconnected');
+        this.onAPIDisconnect();
+      });
     } catch(e) {
       // you need at least the first four elements.
-      if(!await this.getElement('4')) {
+      if(!await this.getRawElement('4')) {
         await this.ui.alert({
           title: 'Database is Outdated',
           text: 'To play Elemental 4, you will need to go online to download the database.'
         });
       }
-    }   
+      this.onAPIDisconnect();
+    }
+
+
+    unlockDynamicEntries();
+    loading = null;
+
+    await this.processEntry(null);
+
     return true;
   }
   async close(): Promise<void> {
-    this.socket.close();
+    this.running = false;
+    this.socket && this.socket.close();
+    delete (window as any).repair;
   }
   async getStats(): Promise<ServerStats> {
     return {
       totalElements: await this.store.length()
     }
   }
-  async getElement(id: string): Promise<Elem> {
+  private async getRawElement(id: string): Promise<Elem> {
     return await this.store.get(id) || null;
   }
+
+  async getElement(id: string): Promise<Elem> {
+    const element = await this.getRawElement(id);
+    return {
+      ...element,
+      stats: {
+        ...element.stats,
+        creators: element.stats.creators
+          && element.stats.creators.map(
+            (id) => this.getProfile(id)
+          ),
+        comments: element.stats.comments
+          && element.stats.comments.map(
+            ({ author, comment }) => ({ author: this.getProfile(author), comment })
+          ),
+      }
+    }
+  }
+
+  private getProfile(id: string): string {
+    var name = this.profiles[id];
+    if (!name) {
+      name = "Anonymous";
+    }
+    return name;
+  }
+
   async getCombo(ids: string[]): Promise<string[]> {
     const str = await this.store.get(ids.join('+')) as string;
     return str ? [str] : [];
   }
   async getStartingInventory(): Promise<string[]> {
     return ['1','2','3','4'];
+  }
+
+  private running = false;
+  async onAPIDisconnect() {
+    while (this.running) {
+      try {
+        const response = await fetch(this.baseUrl + '/');
+        if (response.ok) {
+          this.ui.reloadSelf();
+          return;
+        }
+      } catch (error) {
+
+      }
+      await delay(8000);
+    }
   }
 
   getSuggestionColorInformation(): SuggestionColorInformation<'dynamic-elemental4'> {
@@ -503,8 +624,27 @@ export class Elemental4API
             },
           }
         ]
+      },
+      {
+        title: 'Database',
+        items: [
+          {
+            label: 'Reset Local Database',
+            type: 'button',
+            onChange: () => {
+              this.ui.loading(this.resetDatabase.bind(this));
+            }
+          }
+        ]
       }
     ]
+  }
+
+  async resetDatabase(ui: ElementalLoadingUi) {
+    ui.status('Resetting Database');
+    this.dbMeta.version = -100;
+    await this.saveFile.set('meta', this.dbMeta);
+    await this.ui.reloadSelf();
   }
 
   async getRecentCombinations(limit: number) {
@@ -519,7 +659,7 @@ export class Elemental4API
   }
   waitForElement(id: string) {
     return new Promise<void>((done) => {
-      this.getElement(id).then(x => {
+      this.getRawElement(id).then(x => {
         if(!x) {
           const f = (entry: Entry) => {
             if(entry.type === 'element' && entry.id === id) {
