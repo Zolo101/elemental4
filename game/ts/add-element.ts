@@ -217,9 +217,9 @@ export function addElementToGame(element: Elem, sourceLocation?: HTMLElement, du
       infoContainer.querySelector('#element-comments').innerHTML = (element.stats?.comments || []).map(x => {
         if (x.author) {
           // elem4 doesnt properly decode authors
-          return `<p>"${x.comment}" - Error</p>`;
+          return `<p>"${escapeHTML(x.comment)}" - ${escapeHTML(x.author)}</p>`;
         }
-        return `<p>${x.comment}</p>`;
+        return `<p>${escapeHTML(x.comment)}</p>`;
       }).join('');
       infoContainer.querySelector('#element-data-json').innerHTML = JSON.stringify(element, null, 2);
       infoContainer.querySelector('#element-css-class').innerHTML = `.${getClassFromDisplay(element.display)}`;
@@ -254,8 +254,6 @@ export function addElementToGame(element: Elem, sourceLocation?: HTMLElement, du
       (infoContainer.querySelector('.info-equation-container') as HTMLElement).style.display = '';
 
       getElementTree(element).then((tree) => {
-        console.log('Tree for #' + element.id);
-        console.log(tree);
         if (tree.parent1) {
           let left = tree.parent1;
           let right = tree.parent2 || tree.parent1;
@@ -264,10 +262,10 @@ export function addElementToGame(element: Elem, sourceLocation?: HTMLElement, du
           infoContainer.querySelector('#info-left-element').setAttribute('style', getCSSFromDisplay(left.elem.display));
           infoContainer.querySelector('#info-right-element').innerHTML = escapeHTML(right.elem.display.text);
           infoContainer.querySelector('#info-right-element').setAttribute('style', getCSSFromDisplay(right.elem.display));
-          initTreeCanvas(tree);
         } else {
           (infoContainer.querySelector('.info-equation-container') as HTMLElement).style.display = 'none';
         }
+        initTreeCanvas(tree);
       });
     } catch(e) {
       console.error(e)

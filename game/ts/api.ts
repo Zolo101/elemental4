@@ -1,6 +1,7 @@
 import { Elemental4API } from "../../shared/api/elemental4";
 import { Elemental5API } from "../../shared/api/elemental5";
 import { NV7ElementalAPI } from "../../shared/api/nv7/nv7";
+import { Nv7SingleAPI } from "../../shared/api/nv7single/nv7single";
 import { ElementalBaseAPI, ElementalConfig, ElementalLoadingUi, ElementalSubAPIs, getSubAPI, SaveFileAPI, ServerSavefileEntry } from "../../shared/elem";
 import { delay, delayFrame, escapeHTML } from "../../shared/shared";
 import { SingleplayerAPI } from "./api-singleplayer";
@@ -20,7 +21,7 @@ import { InternalStressTestAPI } from "../../shared/api/internal/internal-stress
 import { DebugAllColorsAPI } from "../../shared/api/internal/internal-all-colors";
 import { BlankExampleAPI } from "../../shared/api/blank";
 import { disposeServerConfigGui, reRenderServerConfigGui } from "./settings-server-config";
-import { Store } from "../../shared/store";
+import { ChunkedStore } from "../../shared/store-chunk";
 
 // @ts-ignore
 class IHateTypescript extends ElementalBaseAPI {
@@ -39,6 +40,7 @@ const apiTypeMap: Record<string, typeof IHateTypescript> = {
   'e4': LedomElementalAPI,
   'le4': LedomElementalAPI,
   'nv7': NV7ElementalAPI,
+  'nv7single': Nv7SingleAPI,
 };
 
 let currentAPI: ElementalBaseAPI;
@@ -117,11 +119,8 @@ export async function connectApi(baseUrl: string, config: ElementalConfig, ui?: 
       || (await fetch(baseUrl + '/elemental.json')
         .then(x => x.json())
         .catch(async() => {
-          console.log(baseUrl);
           return (await getServer(baseUrl)).config;
         }));
-        
-        console.log(json);
 
     if (!json) {
       throw new Error('Could not find Server.');
@@ -153,8 +152,8 @@ export async function connectApi(baseUrl: string, config: ElementalConfig, ui?: 
         }
       },
       store: json.type.startsWith('internal:')
-        ? new Store('data.' + json.type.slice(9))
-        : new Store(json.type + ':' + processBaseUrl(baseUrl))
+        ? new ChunkedStore('data.' + json.type.slice(9))
+        : new ChunkedStore(json.type + ':' + processBaseUrl(baseUrl))
     });
     let isOpen = await api.open(ui);
     if (!isOpen) {

@@ -84,6 +84,9 @@
       bottom: -2px;
       left: 0;
     }
+    .theme-item button {
+      flex: 0 0 80px;
+    }
   </style>
   <style id='remove_styles'>
     #content p {
@@ -222,7 +225,7 @@
     </p>
     <script>
       window.s=document.getElementById('support');
-      window.supported=s.remove&&(s.remove(),1)&&window.navigator&&window.navigator.serviceWorker&&window.localStorage&&!('msLaunchUri' in navigator)?1:(s.innerHTML="Device or Browser not supported.<br>Please upgrade to a modern web browser.",0)</script>
+      window.supported=(s.remove&&(s.remove(),1)&&window.navigator&&window.navigator.serviceWorker&&window.localStorage&&!('msLaunchUri' in navigator))?1:(s.innerHTML="Device or Browser not supported.<br>Please upgrade to a modern web browser.",0)</script>
     <div class="X" style='display:flex;align-items:center;margin-top:50px;'>
       <button id='launch' disabled>Play Game</button>
     </div>

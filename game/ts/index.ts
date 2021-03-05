@@ -1,6 +1,5 @@
-import localForage from '../../shared/localForage';
-import { MountThemeCSS, updateMountedCss, resetBuiltInThemes, showThemeAddDialog } from './theme';
 import { InitSettings } from './settings/settings';
+import { MountThemeCSS, updateMountedCss, resetBuiltInThemes, showThemeAddDialog } from './theme';
 import { InitElementGameUi } from './element-game';
 import { delay } from '../../shared/shared';
 import { fetchWithProgress } from '../../shared/fetch-progress';
@@ -12,6 +11,8 @@ import { getNextMusic, loadSounds, playMusicTrack, playSound } from './audio';
 import { AlertDialog } from './dialog';
 import { getConfigBoolean } from './savefile';
 import { Howler } from 'howler';
+import { setWorkerRegistration } from './service-worker';
+import marked from 'marked';
 
 declare const $production: string;
 declare const $version: string;
@@ -31,6 +32,7 @@ type MenuAPI = {
 async function boot(MenuAPI: MenuAPI) {
   // Initial Stuff
   delete window["$elemental4"];
+  console.clear();
   console.log(`👋 Hello Elemental, version ${$version}`);
 
   if(typeof localStorage === 'undefined') return location.reload();
@@ -40,20 +42,31 @@ async function boot(MenuAPI: MenuAPI) {
   if(MenuAPI.upgraded) {
     ui.status('Finalizing Updates', 0);
     if (window.navigator && navigator.serviceWorker) {
-      navigator.serviceWorker.getRegistrations().then((registrations) => Promise.all(registrations.map(x => x.unregister())));
+      await navigator.serviceWorker.getRegistrations().then((registrations) => Promise.all(registrations.map(x => x.unregister())));
     }
     await caches.delete('ELEMENTAL')
   }
   
   ui.status('Checking Updates', 0);
 
+  if(!('serviceWorker' in navigator)) {
+    alert('Service workers not supported, game cannot start. Make sure to use a Modern Web Browser!')
+    location.reload();
+    return;
+  } else {
+    ui.status('Loading Service', 0);
+    const reg = await navigator.serviceWorker.register('/pwa.js');
+    await navigator.serviceWorker.ready;
+    setWorkerRegistration(reg);
+  }
+  
   let failedUpdateApply;
+  ui.status('Checking Updates', 0);
 
   // check for updates
   try {
     const latestVersion = await fetch('/version').then(x => x.text());
     if (latestVersion !== $version || (!$production && !MenuAPI.upgraded)) {
-      resetBuiltInThemes();
       if(await new Promise(async(resolve) => {
         const cacheKey = latestVersion + '-' + Math.random().toFixed(6).substr(2);
         const progress = fetchWithProgress(await fetch('/elemental.js?v=' + cacheKey));
@@ -64,11 +77,10 @@ async function boot(MenuAPI: MenuAPI) {
           localStorage.cache = cacheKey;
           
           if (await caches.has(cacheName)) {
-            caches.delete(cacheName);
+            await caches.delete(cacheName);
           }
+          await resetBuiltInThemes();
 
-          window.localForage = localForage;
-          
           try {
             eval(text);
 
@@ -96,15 +108,6 @@ async function boot(MenuAPI: MenuAPI) {
     console.log("Could not check version, Updates Skipped.");
   }
 
-  if(!('serviceWorker' in navigator)) {
-    alert('Error Loading Service!')
-    location.reload();
-    return;
-  } else {
-    ui.status('Loading Service', 0);
-    await navigator.serviceWorker.register('/pwa.js?v=' + MenuAPI.cache);
-  }
-
   if(!await caches.has(cacheName)) {
     ui.status('Downloading Game Files', 0);
     const cache = await caches.open(cacheName)
@@ -130,6 +133,7 @@ async function boot(MenuAPI: MenuAPI) {
           '/p5_background',
           '/theme_editor',
           '/manifest.json',
+          '/changelog.md',
           '/chrome-bypass.mp3',
         ].map(async (url, i, a) => {
           await cache.add(url);
@@ -140,12 +144,15 @@ async function boot(MenuAPI: MenuAPI) {
       ]
     );
   } else {
+    ui.status('Loading Themes', 0);
     await MountThemeCSS();
   }
 
   ui.status('Loading Game HTML', 0);
   const gameRoot = document.getElementById('game');
   gameRoot.innerHTML = await fetch('/game').then((x) => x.text());
+  const changelogRoot = document.getElementById('changelog-root');
+  changelogRoot.innerHTML = marked(await fetch('/changelog.md').then((x) => x.text()));
 
   const versionInfo = {
     'version': $version,
@@ -213,14 +220,28 @@ async function boot(MenuAPI: MenuAPI) {
   if (await caches.has('monaco_editor')) {
     caches.delete('monaco_editor');
   }
+  if (await caches.has('secondary_cache')) {
+    caches.delete('secondary_cache');
+  }
 
-  if(!await caches.has('secondary_cache')) {
-    const monacoCache = await caches.open('secondary_cache');
+  if(!await caches.has('secondary_cache_v2')) {
+    const monacoCache = await caches.open('secondary_cache_v2');
 
     Promise.all(require('../../monaco-editor-files.json').files.map(x => `/vs/${x}`).concat('/p5.min.js')
       .map(async (url, i, a) => {
         await monacoCache.add(url);
+        if (url === '/p5.min.js') {
+          const p5tag = document.createElement('script');
+          p5tag.src = '/p5.min.js';
+          p5tag.async = true;
+          document.head.appendChild(p5tag);
+        }
       }))
+  } else {
+    const p5tag = document.createElement('script');
+    p5tag.src = '/p5.min.js';
+    p5tag.async = true;
+    document.head.appendChild(p5tag);
   }
 }
 async function kill() {
